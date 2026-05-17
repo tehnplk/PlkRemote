@@ -20,7 +20,7 @@ async def test_host_cli():
             if data.get("type") == "registration_success":
                 code = data.get("code")
                 print(f"SUCCESS! Host Registered.")
-                print(f"Your 6-digit code is: {code}")
+                print(f"Your 4-digit code is: {code}")
                 print("The relay is working and the host protocol is correct.")
             else:
                 print(f"FAILED: Unexpected response: {data}")

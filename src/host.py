@@ -7,15 +7,116 @@ import websockets
 import qasync
 import win32api
 import win32con
-import ctypes
-from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QMessageBox
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QMainWindow, QLabel, QVBoxLayout, QWidget, QMessageBox
 from PyQt6.QtCore import Qt, pyqtSignal
 
-# Set DPI awareness for precise mouse control
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    ctypes.windll.user32.SetProcessDPIAware()
+TARGET_FPS = 60
+JPEG_QUALITY = 55
+
+APP_STYLE = """
+QMainWindow {
+    background: #f4f7fb;
+}
+QLabel {
+    color: #172033;
+    font-family: "Segoe UI";
+}
+QFrame#panel {
+    background: #ffffff;
+    border: 1px solid #dbe3ee;
+    border-radius: 8px;
+}
+QLabel#eyebrow {
+    color: #607086;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#title {
+    color: #101827;
+    font-size: 20px;
+    font-weight: 700;
+}
+QLabel#subtle {
+    color: #607086;
+    font-size: 12px;
+}
+QLabel#code {
+    background: #eef5ff;
+    border: 1px solid #b8d3ff;
+    border-radius: 8px;
+    color: #0b4db3;
+    font-size: 34px;
+    font-weight: 700;
+    padding: 16px 18px;
+}
+QLabel#status {
+    background: #f7f9fc;
+    border: 1px solid #e0e7f1;
+    border-radius: 8px;
+    color: #32435a;
+    font-size: 13px;
+    padding: 10px 12px;
+}
+QLabel#badge {
+    background: #eaf3ff;
+    border: 1px solid #c7ddff;
+    border-radius: 8px;
+    color: #1756aa;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 9px;
+}
+"""
+
+REMOTE_KEY_TO_VK = {
+    "shift": win32con.VK_SHIFT,
+    "ctrl": win32con.VK_CONTROL,
+    "control": win32con.VK_CONTROL,
+    "alt": win32con.VK_MENU,
+    "win": getattr(win32con, "VK_LWIN", 0x5B),
+    "caplock": win32con.VK_CAPITAL,
+    "capslock": win32con.VK_CAPITAL,
+    "esc": win32con.VK_ESCAPE,
+    "escape": win32con.VK_ESCAPE,
+    "tab": win32con.VK_TAB,
+    "enter": win32con.VK_RETURN,
+    "return": win32con.VK_RETURN,
+    "backspace": win32con.VK_BACK,
+    "delete": win32con.VK_DELETE,
+    "insert": win32con.VK_INSERT,
+    "home": win32con.VK_HOME,
+    "end": win32con.VK_END,
+    "pageup": win32con.VK_PRIOR,
+    "pagedown": win32con.VK_NEXT,
+    "left": win32con.VK_LEFT,
+    "right": win32con.VK_RIGHT,
+    "up": win32con.VK_UP,
+    "down": win32con.VK_DOWN,
+    "space": win32con.VK_SPACE,
+}
+
+for index in range(1, 13):
+    REMOTE_KEY_TO_VK[f"f{index}"] = getattr(win32con, f"VK_F{index}")
+
+EXTENDED_KEYS = {
+    win32con.VK_MENU,
+    getattr(win32con, "VK_LWIN", 0x5B),
+    win32con.VK_INSERT,
+    win32con.VK_DELETE,
+    win32con.VK_HOME,
+    win32con.VK_END,
+    win32con.VK_PRIOR,
+    win32con.VK_NEXT,
+    win32con.VK_LEFT,
+    win32con.VK_RIGHT,
+    win32con.VK_UP,
+    win32con.VK_DOWN,
+}
+
+def qt_args():
+    if sys.platform == "win32" and "-platform" not in sys.argv:
+        return [sys.argv[0], "-platform", "windows:dpiawareness=0", *sys.argv[1:]]
+    return sys.argv
 
 class HostWindow(QMainWindow):
     connection_requested = pyqtSignal(str)
@@ -26,29 +127,64 @@ class HostWindow(QMainWindow):
         self.port = port
         self.url = f"ws://{relay_ip}:{port}"
         
+        self.setStyleSheet(APP_STYLE)
         self.setWindowTitle("PlkRemote Host")
-        self.setFixedSize(300, 200)
-        
-        self.code_label = QLabel("Connecting to Relay...")
+        self.setFixedSize(420, 300)
+
+        header = QHBoxLayout()
+        header.setSpacing(12)
+
+        title_stack = QVBoxLayout()
+        title_stack.setSpacing(2)
+        title = QLabel("PlkRemote")
+        title.setObjectName("title")
+        subtitle = QLabel("Host station")
+        subtitle.setObjectName("subtle")
+        title_stack.addWidget(title)
+        title_stack.addWidget(subtitle)
+
+        badge = QLabel("HOST")
+        badge.setObjectName("badge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        header.addLayout(title_stack, 1)
+        header.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+
+        code_caption = QLabel("PAIRING CODE")
+        code_caption.setObjectName("eyebrow")
+
+        self.code_label = QLabel("----")
+        self.code_label.setObjectName("code")
         self.code_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.code_label.setStyleSheet("font-size: 24px; font-weight: bold; color: blue;")
         
         self.status_label = QLabel("Status: Idle")
+        self.status_label.setObjectName("status")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
+        panel = QFrame()
+        panel.setObjectName("panel")
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("Your Pairing Code:"))
+        layout.setContentsMargins(24, 22, 24, 24)
+        layout.setSpacing(14)
+        layout.addLayout(header)
+        layout.addSpacing(4)
+        layout.addWidget(code_caption)
         layout.addWidget(self.code_label)
         layout.addWidget(self.status_label)
+        panel.setLayout(layout)
         
         container = QWidget()
-        container.setLayout(layout)
+        outer = QVBoxLayout()
+        outer.setContentsMargins(18, 18, 18, 18)
+        outer.addWidget(panel)
+        container.setLayout(outer)
         self.setCentralWidget(container)
         
         self.websocket = None
         self.camera = None
         self.is_running = True
         self.is_streaming = False
+        self.camera_started = False
         
         # dxcam captures one output by default. Keep mouse coordinates in the
         # same coordinate space as the streamed frame, not the virtual desktop.
@@ -62,15 +198,19 @@ class HostWindow(QMainWindow):
     def closeEvent(self, event):
         self.is_running = False
         self.is_streaming = False
+        self.stop_camera()
         event.accept()
         QApplication.instance().quit()
 
     async def init_camera(self):
         while self.is_running and self.camera is None:
             try:
-                self.camera = await asyncio.to_thread(dxcam.create, output_color="BGR")
-                self.status_label.setText("Status: Ready (Camera OK)")
+                self.camera = await asyncio.to_thread(dxcam.create, output_color="BGR", max_buffer_len=2)
+                await asyncio.to_thread(self.camera.start, target_fps=TARGET_FPS, video_mode=True)
+                self.camera_started = True
+                self.status_label.setText(f"Status: Ready ({TARGET_FPS} FPS capture)")
             except Exception as e:
+                self.stop_camera()
                 await asyncio.sleep(5)
 
     async def start(self):
@@ -104,6 +244,35 @@ class HostWindow(QMainWindow):
         if flags:
             win32api.mouse_event(flags, 0, 0, 0, 0)
 
+    def press_key(self, key, action):
+        vk = self.key_to_vk(key)
+        if vk is None:
+            return
+
+        flags = 0
+        if action == "up":
+            flags |= win32con.KEYEVENTF_KEYUP
+        if vk in EXTENDED_KEYS:
+            flags |= win32con.KEYEVENTF_EXTENDEDKEY
+
+        scan = win32api.MapVirtualKey(vk, 0)
+        win32api.keybd_event(vk, scan, flags, 0)
+
+    def key_to_vk(self, key):
+        if not key:
+            return None
+
+        key = str(key).lower()
+        if len(key) == 1:
+            if "a" <= key <= "z":
+                return ord(key.upper())
+            if "0" <= key <= "9":
+                return ord(key)
+            vk = win32api.VkKeyScan(key) & 0xff
+            return vk if vk != 0xff else None
+
+        return REMOTE_KEY_TO_VK.get(key)
+
     async def relay_connection_loop(self):
         while self.is_running:
             self.status_label.setText("Status: Connecting to relay...")
@@ -127,13 +296,10 @@ class HostWindow(QMainWindow):
                             elif msg_type == "mouse_click":
                                 self.click_mouse(data.get("button"), data.get("action"), data.get("x"), data.get("y"))
                             elif msg_type == "key":
-                                # Fallback key support (simpler mapping)
-                                try:
-                                    k = data.get("key")
-                                    if len(k) == 1:
-                                        vk = win32api.VkKeyScan(k) & 0xff
-                                        win32api.keybd_event(vk, 0, 0 if data.get("action") == "down" else win32con.KEYEVENTF_KEYUP, 0)
-                                except: pass
+                                self.press_key(data.get("key"), data.get("action"))
+                            elif msg_type == "client_disconnected":
+                                self.is_streaming = False
+                                self.status_label.setText("Status: Waiting for client...")
             except:
                 if self.is_running: await asyncio.sleep(5)
 
@@ -150,23 +316,67 @@ class HostWindow(QMainWindow):
             self.status_label.setText("Status: Streaming...")
             self.is_streaming = True
             while self.is_streaming and self.is_running:
-                if self.camera:
-                    frame = self.camera.grab()
-                    if frame is not None:
-                        height, width = frame.shape[:2]
-                        self.capture_width = width
-                        self.capture_height = height
-                        _, compressed = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-                        try: await self.websocket.send(compressed.tobytes())
-                        except: break
-                await asyncio.sleep(0.01)
+                if not self.camera:
+                    await asyncio.sleep(0.02)
+                    continue
+
+                encoded = await asyncio.to_thread(self.capture_and_encode_frame)
+                if encoded is None:
+                    await asyncio.sleep(0.001)
+                    continue
+
+                try:
+                    await self.websocket.send(encoded)
+                except Exception:
+                    break
+
+            self.is_streaming = False
+
+    def capture_and_encode_frame(self):
+        if not self.camera:
+            return None
+
+        if self.camera_started and hasattr(self.camera, "get_latest_frame"):
+            frame = self.camera.get_latest_frame()
+        else:
+            frame = self.camera.grab()
+
+        if frame is None:
+            return None
+
+        height, width = frame.shape[:2]
+        self.capture_width = width
+        self.capture_height = height
+
+        ok, compressed = cv2.imencode(
+            ".jpg",
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
+        )
+        return compressed.tobytes() if ok else None
+
+    def stop_camera(self):
+        camera = self.camera
+        self.camera = None
+        self.camera_started = False
+        if not camera:
+            return
+        try:
+            if getattr(camera, "is_capturing", False):
+                camera.stop()
+        except Exception:
+            pass
+        try:
+            camera.release()
+        except Exception:
+            pass
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("relay", nargs="?", default="76.13.182.35")
     args = parser.parse_args()
-    app = QApplication(sys.argv)
+    app = QApplication(qt_args())
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
     host = HostWindow(args.relay, 8765)

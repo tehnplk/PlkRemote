@@ -6,6 +6,7 @@ import string
 import traceback
 
 # Storage for pending and active connections
+PAIRING_CODE_LENGTH = 4
 codes = {} # code -> host_ws
 pairs = {} # ws -> target_ws
 
@@ -58,7 +59,7 @@ async def handle_connection(websocket):
             if msg_type == "register_host":
                 role = "host"
                 while True:
-                    code = ''.join(random.choices(string.digits, k=6))
+                    code = ''.join(random.choices(string.digits, k=PAIRING_CODE_LENGTH))
                     if code not in codes:
                         break
                 current_code = code
