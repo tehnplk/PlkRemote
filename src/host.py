@@ -1,6 +1,9 @@
 import sys
 import asyncio
 import json
+import logging
+import os
+from pathlib import Path
 import dxcam
 import cv2
 import websockets
@@ -8,10 +11,20 @@ import qasync
 import win32api
 import win32con
 from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QMainWindow, QLabel, QVBoxLayout, QWidget, QMessageBox
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, pyqtSignal
 
-TARGET_FPS = 60
-JPEG_QUALITY = 55
+TARGET_FPS = 30
+JPEG_QUALITY = 45
+MAX_FRAME_WIDTH = 1280
+
+def configure_logging():
+    log_root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "PlkRemote"
+    log_root.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=log_root / "host.log",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
 
 APP_STYLE = """
 QMainWindow {
@@ -184,7 +197,6 @@ class HostWindow(QMainWindow):
         self.camera = None
         self.is_running = True
         self.is_streaming = False
-        self.camera_started = False
         
         # dxcam captures one output by default. Keep mouse coordinates in the
         # same coordinate space as the streamed frame, not the virtual desktop.
@@ -196,20 +208,28 @@ class HostWindow(QMainWindow):
         self.connection_requested.connect(self.on_connection_requested)
 
     def closeEvent(self, event):
+        logging.info("Host window close requested")
         self.is_running = False
         self.is_streaming = False
         self.stop_camera()
         event.accept()
         QApplication.instance().quit()
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            logging.info("Host window state changed: minimized=%s streaming=%s", self.isMinimized(), self.is_streaming)
+            if self.isMinimized() and self.is_streaming:
+                self.status_label.setText("Status: Streaming in background...")
+
     async def init_camera(self):
         while self.is_running and self.camera is None:
             try:
-                self.camera = await asyncio.to_thread(dxcam.create, output_color="BGR", max_buffer_len=2)
-                await asyncio.to_thread(self.camera.start, target_fps=TARGET_FPS, video_mode=True)
-                self.camera_started = True
-                self.status_label.setText(f"Status: Ready ({TARGET_FPS} FPS capture)")
+                self.camera = await asyncio.to_thread(dxcam.create, output_color="BGR")
+                self.status_label.setText(f"Status: Ready (Low latency {TARGET_FPS} FPS)")
+                logging.info("Camera initialized")
             except Exception as e:
+                logging.exception("Camera initialization failed")
                 self.stop_camera()
                 await asyncio.sleep(5)
 
@@ -277,9 +297,11 @@ class HostWindow(QMainWindow):
         while self.is_running:
             self.status_label.setText("Status: Connecting to relay...")
             try:
+                logging.info("Connecting to relay %s", self.url)
                 async with websockets.connect(self.url, ping_interval=20, ping_timeout=20) as websocket:
                     self.websocket = websocket
                     await websocket.send(json.dumps({"type": "register_host"}))
+                    logging.info("Relay connected and host registered")
                     
                     async for message in websocket:
                         if not self.is_running: break
@@ -289,7 +311,9 @@ class HostWindow(QMainWindow):
                             if msg_type == "registration_success":
                                 self.code_label.setText(data.get("code"))
                                 self.status_label.setText("Status: Waiting for client...")
+                                logging.info("Pairing code received")
                             elif msg_type == "connection_request":
+                                logging.info("Connection request received from %s", data.get("client_id"))
                                 self.connection_requested.emit(data.get("client_id"))
                             elif msg_type == "mouse_move":
                                 self.move_mouse(data.get("x"), data.get("y"))
@@ -298,48 +322,61 @@ class HostWindow(QMainWindow):
                             elif msg_type == "key":
                                 self.press_key(data.get("key"), data.get("action"))
                             elif msg_type == "client_disconnected":
+                                logging.info("Client disconnected")
                                 self.is_streaming = False
                                 self.status_label.setText("Status: Waiting for client...")
-            except:
-                if self.is_running: await asyncio.sleep(5)
+            except Exception:
+                logging.exception("Relay connection loop failed")
+                if self.is_running:
+                    await asyncio.sleep(5)
 
     def on_connection_requested(self, client_id):
         reply = QMessageBox.question(self, "Connection Request", 
                                    f"Client {client_id} wants to connect. Allow?",
                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
+            logging.info("Connection request accepted")
             asyncio.create_task(self.accept_and_stream())
+        else:
+            logging.info("Connection request rejected")
 
     async def accept_and_stream(self):
         if self.websocket:
             await self.websocket.send(json.dumps({"type": "accept_connection"}))
             self.status_label.setText("Status: Streaming...")
+            logging.info("Streaming started")
             self.is_streaming = True
+            frame_interval = 1 / TARGET_FPS
+
             while self.is_streaming and self.is_running:
+                started_at = asyncio.get_running_loop().time()
                 if not self.camera:
                     await asyncio.sleep(0.02)
                     continue
 
                 encoded = await asyncio.to_thread(self.capture_and_encode_frame)
-                if encoded is None:
-                    await asyncio.sleep(0.001)
-                    continue
+                if encoded is not None:
+                    try:
+                        await self.websocket.send(encoded)
+                    except Exception:
+                        logging.exception("Frame send failed")
+                        break
 
-                try:
-                    await self.websocket.send(encoded)
-                except Exception:
-                    break
+                elapsed = asyncio.get_running_loop().time() - started_at
+                await asyncio.sleep(max(0.001, frame_interval - elapsed))
 
             self.is_streaming = False
+            logging.info("Streaming stopped")
 
     def capture_and_encode_frame(self):
         if not self.camera:
             return None
 
-        if self.camera_started and hasattr(self.camera, "get_latest_frame"):
-            frame = self.camera.get_latest_frame()
-        else:
+        try:
             frame = self.camera.grab()
+        except Exception:
+            logging.exception("Camera grab failed")
+            return None
 
         if frame is None:
             return None
@@ -348,17 +385,30 @@ class HostWindow(QMainWindow):
         self.capture_width = width
         self.capture_height = height
 
-        ok, compressed = cv2.imencode(
-            ".jpg",
-            frame,
-            [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
-        )
+        if width > MAX_FRAME_WIDTH:
+            scale = MAX_FRAME_WIDTH / width
+            try:
+                frame = cv2.resize(
+                    frame,
+                    (MAX_FRAME_WIDTH, int(height * scale)),
+                    interpolation=cv2.INTER_AREA,
+                )
+            except Exception:
+                return None
+
+        try:
+            ok, compressed = cv2.imencode(
+                ".jpg",
+                frame,
+                [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
+            )
+        except Exception:
+            return None
         return compressed.tobytes() if ok else None
 
     def stop_camera(self):
         camera = self.camera
         self.camera = None
-        self.camera_started = False
         if not camera:
             return
         try:
@@ -372,11 +422,14 @@ class HostWindow(QMainWindow):
             pass
 
 def main():
+    configure_logging()
+    logging.info("Host app starting")
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("relay", nargs="?", default="76.13.182.35")
     args = parser.parse_args()
     app = QApplication(qt_args())
+    app.setQuitOnLastWindowClosed(False)
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
     host = HostWindow(args.relay, 8765)

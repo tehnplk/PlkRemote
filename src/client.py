@@ -112,6 +112,15 @@ QLabel#badge {
     font-weight: 700;
     padding: 5px 9px;
 }
+QLabel#badgeDisconnected {
+    background: #fff1f0;
+    border: 1px solid #ffc9c3;
+    border-radius: 8px;
+    color: #b42318;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 9px;
+}
 QLabel#display {
     background: #0b1020;
     color: #d6deea;
@@ -144,6 +153,7 @@ class ClientWindow(QMainWindow):
         self.websocket = None
         self.display_rect = None
         self.is_running = True
+        self.connected = False
 
     def closeEvent(self, event):
         self.is_running = False
@@ -221,7 +231,7 @@ class ClientWindow(QMainWindow):
         topbar_layout.setSpacing(10)
         title = QLabel("PlkRemote Client")
         title.setObjectName("subtle")
-        self.session_label = QLabel("Connected")
+        self.session_label = QLabel("CONNECTED")
         self.session_label.setObjectName("badge")
         self.session_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         topbar_layout.addWidget(title, 1)
@@ -264,6 +274,7 @@ class ClientWindow(QMainWindow):
                         data = json.loads(message)
                         if data.get("type") == "connection_accepted":
                             self.setup_display_ui()
+                            self.set_connection_state(True)
                         elif data.get("type") == "error":
                             self.status_label.setText(f"Status: {data.get('message')}")
                     elif isinstance(message, bytes):
@@ -272,7 +283,25 @@ class ClientWindow(QMainWindow):
                             self.update_display(QPixmap.fromImage(image))
         except Exception as e:
             print(f"Client connection error: {e}")
-            self.status_label.setText(f"Status: Connection failed")
+            if hasattr(self, "status_label"):
+                self.status_label.setText(f"Status: Connection failed")
+        finally:
+            self.websocket = None
+            if self.is_running:
+                self.set_connection_state(False)
+
+    def set_connection_state(self, connected):
+        self.connected = connected
+        if hasattr(self, "session_label"):
+            if connected:
+                self.session_label.setText("CONNECTED")
+                self.session_label.setObjectName("badge")
+            else:
+                self.session_label.setText("DISCONNECTED")
+                self.session_label.setObjectName("badgeDisconnected")
+            self.session_label.style().unpolish(self.session_label)
+            self.session_label.style().polish(self.session_label)
+            self.session_label.update()
 
     def update_display(self, pixmap):
         scaled = pixmap.scaled(
@@ -303,6 +332,9 @@ class ClientWindow(QMainWindow):
                 self.send_mouse_move(event)
                 return True
             if event_type == QEvent.Type.MouseButtonPress:
+                self.send_mouse_click(event, "down")
+                return True
+            if event_type == QEvent.Type.MouseButtonDblClick:
                 self.send_mouse_click(event, "down")
                 return True
             if event_type == QEvent.Type.MouseButtonRelease:
