@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 # Set DPI awareness for precise mouse control
 try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 except Exception:
     ctypes.windll.user32.SetProcessDPIAware()
 
