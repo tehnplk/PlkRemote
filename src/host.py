@@ -82,8 +82,11 @@ class HostWindow(QMainWindow):
         if x_rel is None or y_rel is None:
             return
 
-        x_rel = max(0.0, min(1.0, float(x_rel)))
-        y_rel = max(0.0, min(1.0, float(y_rel)))
+        try:
+            x_rel = max(0.0, min(1.0, float(x_rel)))
+            y_rel = max(0.0, min(1.0, float(y_rel)))
+        except (TypeError, ValueError):
+            return
         x = int(self.capture_left + (x_rel * max(0, self.capture_width - 1)))
         y = int(self.capture_top + (y_rel * max(0, self.capture_height - 1)))
         win32api.SetCursorPos((x, y))
