@@ -1,0 +1,18 @@
+[project]
+name = "plkremote"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "dxcam>=0.3.0",
+    "numpy>=2.4.5",
+    "opencv-python>=4.13.0.92",
+    "pydirectinput>=1.0.4",
+    "pyinstaller>=6.20.0",
+    "pyqt6>=6.11.0",
+    "pyturbojpeg>=2.2.0",
+    "pywin32>=311",
+    "qasync>=0.28.0",
+    "websockets>=16.0",
+]
